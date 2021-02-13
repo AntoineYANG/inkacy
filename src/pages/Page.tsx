@@ -12,7 +12,8 @@ import { createStyle, useStyleWrapper } from "reacss";
 const PageStyle = createStyle({
   "div": {
     width:      "max-content",
-    height:     "max-content"
+    height:     "max-content",
+    overflow:   "scroll"
   },
   "div>section": {
     minWidth:   "calc(100vw - 16px)",

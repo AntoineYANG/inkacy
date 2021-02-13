@@ -5,173 +5,339 @@
  * @Last Modified time: 2021-02-13 01:37:20
  */
 
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { NoteData, NoteGraphNode } from "./Note";
 import { createStyle, useStyleWrapper } from "reacss";
 
 
 export interface GraphNode extends NoteGraphNode {
-  id: string;
-  x:  number;
-  y:  number;
-  w:  number;
-  h:  number;
+  type: "node" | "new";
+  key:  string;
+  n:    number;
 };
 
 const GraphNodeStyle = createStyle({
-  "svg rect": {
-    fill:   "rgba(0,0,0,0)",
-    stroke: "rgb(252,250,251)",
-    strokeWidth:  1.2,
-    cursor: "text"
+  "* *": {
+    transition:     "all 0.3s"
   },
-  "svg text": {
-    fill:   "rgb(252,250,251)",
+  "* table": {
+    zIndex:         20,
+    borderCollapse: "collapse",
+    padding:        "2em",
+    display:        "block"
+  },
+  "* td": {
+    background:     "rgba(0,0,0,0)",
+    padding:        "0.8em 30px"
+  },
+  "* label": {
+    display:        "inline-block",
+    border:         "1.4px solid",
+    borderRadius:   "1px",
+    padding:        "5px 0.6em",
+    whiteSpace:     "pre",
+    cursor:         "pointer",
+    boxShadow:      "0 0 4px",
+    textShadow:     "0 0 1px",
+    userSelect:     "none",
+    transition:     "text-shadow 0.4s, box-shadow 0.4s",
+  },
+  "* label.unselected:hover": {
+    boxShadow:      "0 0 0.6em"
+  },
+  "* label.selected": {
+    boxShadow:      "0 0 1.6em",
+    textShadow:     "1px 1px 0.6em"
+  },
+  "* label.btn": {
+    border:         "none",
+    textShadow:     "none",
+    boxShadow:      "0 0 0.6em",
+    opacity:        0.7
+  },
+  "* svg": {
+    zIndex:         100,
     pointerEvents:  "none"
+  },
+  "* svg path": {
+    fill:           "none",
+    stroke:         "rgb(195,226,246)",
+    strokeWidth:    "1"
+  },
+  "* svg path.btn": {
+    opacity:        0.8
   }
 });
 
-interface GraphRenderingState {
-  loaded: boolean;
-  nodes:  GraphNode[];
-  w:      number;
-  h:      number;
+type GraphLinks = {
+  source: NoteGraphNode & { key: string; type: "node" | "new"; };
+  target: NoteGraphNode & { key: string; type: "node" | "new"; };
 };
+
+interface GraphRenderingState {
+  nodes:  (NoteGraphNode & { type: "node" | "new"; key: string; })[];
+  width:  number;
+  height: number;
+  links:  GraphLinks[] | null;
+  nodeMap: {[key: string]: [number, number, number, number];};
+  selected: string | null;
+};
+
+let selected: string | null = null;
 
 const GraphRendering: React.FC<NoteData> = data => {
   const StyleWrapper = useStyleWrapper(GraphNodeStyle);
 
-  let width: number = 300;
-  let height: number = 300;
-  const nodes: GraphNode[] = [];
-
-  const graphData = data.graph.map(node => Object.assign({}, node));
-
-  const searchChildren = (node: NoteGraphNode, id: string, x: number, y: number) => {
-    node.children.forEach((n, i) => {
-      const _id = id + "," + i;
-      const _x = x + 120;
-      const _y = y + 25 * (i - (node.children.length - 1) / 2) / node.children.length;
-      nodes.push({
-        ...n,
-        id: _id,
-        x:  _x,
-        y:  _y,
-        w:  0,
-        h:  0
-      });
-      searchChildren(n, _id, _x, _y);
+  let nodes: (NoteGraphNode & { type: "node" | "new"; key: string; })[] = [];
+  
+  data.graph.forEach((node, i) => {
+    const key = i + "";
+    (node as any).key = key;
+    eachNode(node, (n, j) => {
+      if (n.level > 0) {
+        (n as any).key = (n.parent as any).key + "," + j;
+      }
     });
-  };
-
-  graphData.forEach(node => {
-    if (node.parent === null) {
-      const id = nodes.length + "";
+    eachNode(node, n => {
+      const newChild: (NoteGraphNode & {
+          type: "node" | "new";
+          key: string;
+      }) = {
+        type: "new",
+        children: [],
+        key: (n as any).key + ":new",
+        level: n.level + 1,
+        parent: n,
+        text: "new"
+      };
       nodes.push({
-        ...node,
-        id,
-        x:  0,
-        y:  0,
-        w:  0,
-        h:  0
+        ...(n as NoteGraphNode & { key: string; }),
+        type: (n as { type?: "new" | "node"; }).type ?? "node",
+        children: (n as { type?: "new" | "node"; }).type === "new" ? [] : (
+          n.children.concat([newChild])
+        )
       });
-    }
+      nodes.push(newChild);
+    });
   });
-  nodes.forEach((node, i) => {
-    const x = 0;
-    const y = 50 * (i - (nodes.length - 1) / 2) / nodes.length;
-    searchChildren(node, node.id, x, y);
+  
+  nodes.push({
+    type: "new",
+    children: [],
+    key: ":new",
+    level: 0,
+    parent: null,
+    text: "new"
   });
 
   const [state, setState] = useState<GraphRenderingState>({
-    loaded: false,
-    nodes,
-    w:      300,
-    h:      300
+    width:  0,
+    height: 0,
+    links:  null,
+    nodeMap:  {},
+    selected,
+    nodes
+  });
+  
+  const table: (GraphNode | null)[][] = [];
+  const used: number[] = [];
+
+  const maxDepth = Math.max(...state.nodes.map(node => node.level)) + 1;
+
+  for (let i = 0; i < maxDepth; i++) {
+    used.push(0);
+  }
+  
+  for (let r = 0; r < state.nodes.filter(node => node.children.length === 0).length; r++) {
+    const tr: (GraphNode | null)[] = [];
+    for (let i = 0; i < maxDepth; i++) {
+      tr.push(null);
+    }
+    table.push(tr);
+  }
+
+  state.nodes.forEach(node => {
+    let n: number = 0;
+    eachNode(node, child => {
+      if (child.children.length === 0) {
+        n += 1;
+      }
+    });
+    // console.log(table, used[node.level], node.level);
+    if (used[node.level] >= table.length) {
+      return;
+    }
+    table[used[node.level]][node.level] = {
+      ...node,
+      type: node.type ?? "node",
+      key:  node.key,
+      n
+    };
+    used[node.level] += n;
+    if (node.children.length === 0) {
+      for (let x = node.level + 1; x < maxDepth; x++) {
+        used[x] += n;
+      }
+    }
   });
 
-  const div = React.createRef<HTMLDivElement>();
-
+  const tableRef = React.createRef<HTMLTableElement>();
+  
   useEffect(() => {
-    if (div.current) {
-      const list = div.current!.querySelectorAll("label");
-      for (let i = 0; i < list.length; i++) {
-        nodes[i].w = list[i].clientWidth;
-        nodes[i].h = list[i].clientHeight;
-      }
+    if (tableRef.current) {
+      const nodeMap: {[key: string]: [number, number, number, number];} = {};
+
+      const outerBounds = tableRef.current.getBoundingClientRect();
+      
+      table.forEach((tr, y) => {
+        const row = tableRef.current!.children[0].children[y];
+        let x = 0;
+        tr.forEach(td => {
+          if (td) {
+            const label = row.children[x].children[0] as HTMLLabelElement;
+            const bounds = label.getBoundingClientRect();
+            
+            nodeMap[td.key] = [
+              bounds.x - outerBounds.x,
+              bounds.y - outerBounds.y,
+              bounds.width,
+              bounds.height
+            ];
+            x += 1;
+          }
+        });
+      });
+
+      const links: GraphLinks[] = [];
+
+      state.nodes.forEach(node => {
+        node.children.forEach(child => {
+          links.push({
+            source: node,
+            target: {
+              ...child,
+              type: (child as any).type ?? "node"
+            } as NoteGraphNode & { key: string; type: "node" | "new"; }
+          });
+        });
+      });
+
       setState({
-        ...state,
-        nodes:  [...nodes],
-        loaded: true
+        width:  tableRef.current.clientWidth,
+        height: tableRef.current.clientHeight,
+        links,
+        nodeMap,
+        nodes,
+        selected: null
       });
     }
-  }, [div.current]);
+  }, [tableRef.current, state.selected, selected]);
 
-  return state.loaded ? (
+  return (
     <StyleWrapper>
-      <svg width={ width } height={ height }
+      <div
         style={{
-          background: "rgb(24,24,25)",
-          boxShadow:  "3px 4px 6px rgba(0,0,0,0.5)"
-        }} >
-          <g
-            style={{
-              transform:  `translate(${ width / 2 }px,${ height / 2 }px)`
-            }} >
+          height:   state.height,
+          overflow: "hidden"
+        }} 
+        onClick={
+          () => {
+            if (selected !== null) {
+              selected = null;
+              state.nodes.forEach(node => {
+                eachNode(node, n => {
+                  n.children = n.children.filter(
+                    c => (c as any).type === "node"
+                  );
+                });
+              });
+              state.nodes = nodes.filter(node => node.level === 0 || node.type === "node");
+              nodes = state.nodes;
+              setState({
+                ...state,
+                nodes,
+                selected
+              });
+            }
+          }
+        }>
+          <table ref={ tableRef } >
+            <tbody>
               {
-                state.nodes.map(node => {
+                table.map((tr, y) => {
                   return (
-                    <g key={ node.id } >
-                      <rect x={ node.x - node.w / 2 } y={ node.y - node.h / 2 }
-                        width={ node.w } height={ node.h }
-                        rx={ 10 } ry={ 10 } />
+                    <tr key={ y } >
                       {
-                        node.text.includes("\n") ? node.text.split("\n").map((t, i) => {
+                        tr.filter(td => td).map((td, x) => {
+                          const isBtn = td!.type !== "node";
+
                           return (
-                            <text key={ i }
-                              x={ node.x - node.w / 2 } y={ node.y }
-                              dx="0.6em" dy={ `${ i * 1.3 - 0.3 }em` } >
-                                { t }
-                            </text>
+                            <td key={ x } rowSpan={ td!.n === 1 ? undefined : td!.n } >
+                              <label
+                                className={
+                                  isBtn ? "btn" : (
+                                    selected === td!.key ? "selected" : "unselected"
+                                  ) }
+                                onClick={
+                                  e => {
+                                    e.stopPropagation();
+                                    if (td!.type === "node") {
+                                      if (selected !== td!.key) {
+                                        selected = td!.key;
+                                        setState({
+                                          ...state,
+                                          selected,
+                                          nodes
+                                        });
+                                      }
+                                    }
+                                  }
+                                } >
+                                  { td!.text }
+                              </label>
+                            </td>
                           );
-                        }) : (
-                          <text
-                            x={ node.x - node.w / 2 } y={ node.y }
-                            dx="0.6em" dy="0.3em" >
-                             { node.text }
-                          </text>
-                        )
+                        })
                       }
-                    </g>
+                    </tr>
                   );
                 })
               }
-          </g>
-      </svg>
+            </tbody>
+          </table>
+          <svg width={ state.width } height={ state.height }
+            style={{
+              position: "relative",
+              top:      `-${state.height}px`
+            }} >
+              {
+                state.links && state.links.map(link => {
+                  const s = state.nodeMap[link.source.key];
+                  const t = state.nodeMap[link.target.key];
+
+                  const path = `M${s[0]+s[2]},${s[1]+s[3]/2}`
+                    + ` Q${s[0]+s[2]+24},${t[1]+t[3]/2}`
+                    + ` ${t[0]},${t[1]+t[3]/2}`;
+
+                  const isBtn = link.target.type !== "node";
+
+                  return (
+                    <path key={ link.source.key + ":" + link.target.key }
+                      strokeDasharray={ isBtn ? "3,3" : void 0 }
+                      className={ isNaN ? "btn" : void 0 }
+                      d={ path } />
+                  );
+                })
+              }
+          </svg>
+      </div>
     </StyleWrapper>
-  ) : (
-    <div ref={ div }
-      style={{
-        // width:  0,
-        // height: 0,
-        overflow: "hidden"
-      }} >
-        {
-          state.nodes.map(node => {
-            return (
-              <label key={ node.id }
-                style={{
-                  padding:    "6px 0.6em",
-                  whiteSpace: "pre",
-                  display:    "block"
-                }} >
-                  { node.text }
-              </label>
-            );
-          })
-        }
-    </div>
   );
+};
+
+const eachNode = (root: NoteGraphNode, callback: (node: NoteGraphNode, i: number) => void, idx: number=0): void => {
+  callback(root, idx);
+  root.children.forEach((child, i) => eachNode(child, callback, i));
 };
 
 
